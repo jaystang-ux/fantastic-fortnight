@@ -3,110 +3,98 @@ import pandas as pd
 from supabase import create_client, Client
 from streamlit_confetti import confetti
 
-# 1. Connection Setup
-try:
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    supabase: Client = create_client(url, key)
-except:
-    st.error("Please set SUPABASE_URL and SUPABASE_KEY in Streamlit Secrets.")
-    st.stop()
+# 1. Connection
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
+supabase: Client = create_client(url, key)
 
-st.set_page_config(page_title="Goal Tracker", layout="centered")
+st.set_page_config(page_title="My Private Goals", layout="centered")
 
-# 2. Login / Sign Up Logic (Username Only)
+# 2. Authentication Logic
 if "user" not in st.session_state:
-    st.title("🎯 Resolution Tracker")
-    tab_log, tab_reg = st.tabs(["Login", "Create Account"])
+    st.title("🔐 Goal Tracker")
+    t1, t2 = st.tabs(["Login", "Create Account"])
     
-    with tab_log:
-        u_log = st.text_input("Username", key="l_u")
-        p_log = st.text_input("Password", type="password", key="l_p")
-        if st.button("Sign In", use_container_width=True):
-            # Convert Username to Dummy Email
+    with t1:
+        u = st.text_input("Username", key="l_u")
+        p = st.text_input("Password", type="password", key="l_p")
+        if st.button("Sign In"):
+            dummy = f"{u}@app.local"
             try:
-                res = supabase.auth.sign_in_with_password({"email": f"{u_log}@app.local", "password": p_log})
+                res = supabase.auth.sign_in_with_password({"email": dummy, "password": p})
                 st.session_state.user = res.user
                 st.rerun()
-            except: st.error("Invalid username or password.")
-            
-    with tab_reg:
-        u_reg = st.text_input("Choose Username", key="r_u")
-        p_reg = st.text_input("Choose Password", type="password", key="r_p")
-        if st.button("Register", use_container_width=True):
+            except: st.error("Invalid credentials.")
+                
+    with t2:
+        nu = st.text_input("Choose Username", key="r_u")
+        np = st.text_input("Choose Password", type="password", key="r_p")
+        if st.button("Register"):
+            dummy = f"{nu}@app.local"
             try:
-                # Register with Dummy Email
-                supabase.auth.sign_up({"email": f"{u_reg}@app.local", "password": p_reg})
-                st.success(f"Account '{u_reg}' created! You can now login.")
-            except: st.error("Username taken or password too short.")
+                supabase.auth.sign_up({"email": dummy, "password": np})
+                st.success("Account created! You can now login.")
+            except: st.error("Username taken.")
     st.stop()
 
-# 3. Authenticated Content
+# 3. User Identity
+# This converts 'JohnDoe@app.local' back to 'JohnDoe' for the UI
+user_email = st.session_state.user.email
+display_name = user_email.split('@')[0]
 uid = st.session_state.user.id
-username = st.session_state.user.email.split('@')[0]
 
-# --- Sidebar ---
-with st.sidebar:
-    st.write(f"Logged in as: **{username}**")
-    if st.button("Logout"):
-        supabase.auth.sign_out()
-        del st.session_state.user
-        st.rerun()
-    st.divider()
-    st.header("New Goal")
-    g_title = st.text_input("Resolution Name")
-    g_mode = st.radio("Tracking", ["Binary", "Numeric"])
-    g_target = st.number_input("Goal Target", value=1.0) if g_mode == "Numeric" else 1.0
-    if st.button("Add Goal"):
-        if g_title:
+# 4. Main Interface
+st.title(f"🎯 {display_name}'s Dashboard")
+
+tab_main, tab_done, tab_settings = st.tabs(["🚀 Active", "✅ Finished", "⚙️ Settings"])
+
+with tab_settings:
+    st.subheader("Account Settings")
+    st.info(f"Your unique ID: {uid}") # Shown for technical reference
+    
+    st.markdown("---")
+    st.write("### Link Real Email")
+    st.write(f"Current Email: **{user_email}**")
+    
+    new_email = st.text_input("Enter new email address")
+    if st.button("Update Email"):
+        try:
+            # This updates the identity in Supabase Auth
+            supabase.auth.update_user({"email": new_email})
+            st.success("Email updated! Please logout and log back in with your new email.")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+with tab_main:
+    # --- Add Goal Logic ---
+    with st.expander("➕ Add New Goal"):
+        name = st.text_input("Title")
+        mode = st.radio("Mode", ["Binary", "Numeric"])
+        targ = st.number_input("Target", value=1.0) if mode == "Numeric" else 1.0
+        if st.button("Save"):
             supabase.table("resolutions").insert({
-                "title": g_title, "tracking_type": g_mode, 
-                "target_value": g_target, "user_id": uid
+                "title": name, "tracking_type": mode, "target_value": targ, "user_id": uid
             }).execute()
             st.rerun()
 
-# --- Dashboard ---
-st.title(f"🚀 {username}'s Progress")
-res = supabase.table("resolutions").select("*").execute()
-df = pd.DataFrame(res.data)
-
-if not df.empty:
-    done_count = len(df[df['is_completed'] == True])
-    total_count = len(df)
-    st.metric("Total Completed", f"{done_count} / {total_count}")
-    st.progress(done_count / total_count if total_count > 0 else 0)
+    # --- Fetch and Display ---
+    res = supabase.table("resolutions").select("*").execute()
+    df = pd.DataFrame(res.data)
     
-    t_active, t_done = st.tabs(["Active", "Completed"])
-    
-    with t_active:
-        active_df = df[df['is_completed'] == False]
-        for _, r in active_df.iterrows():
-            with st.expander(r['title'], expanded=True):
-                c1, c2 = st.columns([4, 1])
-                with c1:
-                    if r['tracking_type'] == "Binary":
-                        if st.button("Finish", key=f"f_{r['id']}"):
-                            supabase.table("resolutions").update({"is_completed": True, "current_value": 1}).eq("id", r['id']).execute()
-                            confetti()
-                            st.rerun()
-                    else:
-                        val = st.number_input("Current", value=float(r['current_value']), key=f"v_{r['id']}")
-                        if val != r['current_value']:
-                            is_now_done = val >= r['target_value']
-                            supabase.table("resolutions").update({"current_value": val, "is_completed": is_now_done}).eq("id", r['id']).execute()
-                            if is_now_done: confetti()
-                            st.rerun()
-                with c2:
-                    if st.button("🗑️", key=f"del_{r['id']}"):
-                        supabase.table("resolutions").delete().eq("id", r['id']).execute()
-                        st.rerun()
-
-    with t_done:
-        for _, r in df[df['is_completed'] == True].iterrows():
-            col1, col2 = st.columns([4, 1])
-            col1.success(f"**{r['title']}**")
-            if col2.button("🗑️", key=f"del_c_{r['id']}"):
-                supabase.table("resolutions").delete().eq("id", r['id']).execute()
+    if not df.empty:
+        active = df[df['is_completed'] == False]
+        for _, r in active.iterrows():
+            st.write(f"### {r['title']}")
+            if st.button("Mark as Done", key=f"c_{r['id']}"):
+                supabase.table("resolutions").update({"is_completed": True}).eq("id", r['id']).execute()
+                confetti()
                 st.rerun()
-else:
-    st.info("No goals yet. Use the sidebar to add your first resolution!")
+
+with tab_done:
+    if not df.empty:
+        finished = df[df['is_completed'] == True]
+        for _, r in finished.iterrows():
+            st.success(f"Completed: {r['title']}")
+
+# Sidebar Logout
+st.sidebar.button("Logout", on_click=lambda: (supabase.auth.sign_out(), st.session_state.clear()))
