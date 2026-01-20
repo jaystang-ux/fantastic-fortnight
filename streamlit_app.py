@@ -3,20 +3,20 @@ import pandas as pd
 from supabase import create_client, Client
 from streamlit_confetti import confetti
 
-# 1. Connection
+# 1. Secure Connection
 try:
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(url, key)
-except:
-    st.error("Credential Error: Check Streamlit Secrets.")
+except Exception as e:
+    st.error("Credential Error: Please check your Streamlit Secrets.")
     st.stop()
 
-st.set_page_config(page_title="2026 Goals", page_icon="🎯", layout="centered")
+st.set_page_config(page_title="Goal Tracker", page_icon="🎯", layout="centered")
 
-# 2. Authentication
+# 2. Authentication Logic
 if "user" not in st.session_state:
-    st.title("🎯 2026 Goal Tracker")
+    st.title("Goal Tracker")
     t1, t2 = st.tabs(["Login", "Create Account"])
     with t1:
         u = st.text_input("Username", key="l_u")
@@ -26,78 +26,60 @@ if "user" not in st.session_state:
                 res = supabase.auth.sign_in_with_password({"email": f"{u}@app.local", "password": p})
                 st.session_state.user = res.user
                 st.rerun()
-            except: st.error("Login failed. Check username/password.")
+            except: st.error("Login failed. Check credentials.")
     with t2:
         nu = st.text_input("Choose Username", key="r_u")
         np = st.text_input("Choose Password", type="password", key="r_p")
         if st.button("Register Account", use_container_width=True):
             try:
                 supabase.auth.sign_up({"email": f"{nu}@app.local", "password": np})
-                st.success("Account created! You can now login.")
-            except: st.error("Username taken or password too short.")
+                st.success("Account created successfully.")
+            except: st.error("Registration error.")
     st.stop()
 
-# 3. User Identity
+# 3. User Context
 uid = st.session_state.user.id
 display_name = st.session_state.user.email.split('@')[0]
 
-# 4. Main Dashboard UI
-st.title(f"🚀 {display_name}'s Goals")
+# 4. Main Interface
+st.header(f"Account: {display_name}")
 
-tab_active, tab_done, tab_settings = st.tabs(["Active Goals", "Completed", "Settings"])
+# Using built-in Streamlit icons for tabs
+tab_active, tab_done, tab_settings = st.tabs([
+    "Active Goals", 
+    "Completed", 
+    "Settings"
+])
 
-# --- SETTINGS TAB (Common Features) ---
 with tab_settings:
-    st.subheader("Account Management")
-    st.text(f"Your UID: {uid}")
-    
-    # Change Password Feature
-    with st.expander("🔐 Change Password"):
-        new_pw = st.text_input("New Password", type="password")
-        if st.button("Update Password"):
-            try:
-                supabase.auth.update_user({"password": new_pw})
-                st.success("Password updated successfully!")
-            except Exception as e: st.error(f"Error: {e}")
-            
-    # Link Email Feature
-    with st.expander("📧 Update/Link Email"):
-        current_mail = st.session_state.user.email
-        st.write(f"Current: {current_mail}")
-        mail_input = st.text_input("New Email Address")
-        if st.button("Verify & Update"):
-            try:
-                supabase.auth.update_user({"email": mail_input})
-                st.info("Check your new email for a verification link.")
-            except Exception as e: st.error(f"Error: {e}")
-
-    if st.button("Log Out", type="primary", use_container_width=True):
+    st.subheader("Configuration")
+    if st.button("Logout", type="primary"):
         supabase.auth.sign_out()
-        del st.session_state.user
+        st.session_state.clear()
         st.rerun()
 
-# --- ACTIVE GOALS TAB ---
 with tab_active:
-    # Adding a goal (FIXED: Includes user_id)
-    with st.expander("➕ Create New Goal"):
+    # --- ADD GOAL FORM ---
+    with st.expander("Create New Goal"):
         name = st.text_input("Goal Title")
         cat = st.selectbox("Category", ["Health", "Finance", "Learning", "Personal"])
-        mode = st.radio("Type", ["Binary (Done/Not Done)", "Numeric (Progress)"])
-        target = st.number_input("Target Value", value=1.0) if mode == "Numeric (Progress)" else 1.0
+        mode = st.radio("Type", ["Binary", "Numeric"])
+        target = st.number_input("Target", value=1.0) if mode == "Numeric" else 1.0
         
         if st.button("Save Resolution"):
             if name:
-                # CRITICAL FIX: user_id must be sent to pass RLS
                 supabase.table("resolutions").insert({
                     "title": name, 
                     "category": cat,
-                    "tracking_type": "Numeric" if mode == "Numeric (Progress)" else "Binary", 
+                    "tracking_type": mode, 
                     "target_value": target,
-                    "user_id": uid
+                    "user_id": uid,
+                    "current_value": 0,
+                    "is_completed": False
                 }).execute()
                 st.rerun()
 
-    # Display Goals
+    # --- DISPLAY ACTIVE GOALS ---
     res = supabase.table("resolutions").select("*").eq("user_id", uid).execute()
     df = pd.DataFrame(res.data)
 
@@ -107,38 +89,34 @@ with tab_active:
             with st.container(border=True):
                 c1, c2 = st.columns([4, 1])
                 with c1:
-                    st.write(f"### {row['title']}")
-                    st.caption(f"Category: {row['category']}")
-                    if row['tracking_type'] == "Numeric":
+                    st.markdown(f"**{row['title']}**")
+                    if row['tracking_type'] == "Binary":
+                        if st.button("Complete", key=f"done_{row['id']}"):
+                            supabase.table("resolutions").update({"is_completed": True, "current_value": 1}).eq("id", row['id']).execute()
+                            confetti(emojis=["✨"])
+                            st.rerun()
+                    else:
                         curr = float(row['current_value'])
                         targ = float(row['target_value'])
-                        prog = min(curr / targ, 1.0)
-                        st.progress(prog)
-                        new_val = st.number_input(f"Update {row['title']}", value=curr, key=f"v_{row['id']}")
+                        new_val = st.number_input(f"Progress: {row['title']}", value=curr, key=f"v_{row['id']}")
                         if new_val != curr:
                             is_done = new_val >= targ
                             supabase.table("resolutions").update({"current_value": new_val, "is_completed": is_done}).eq("id", row['id']).execute()
-                            if is_done: confetti()
-                            st.rerun()
-                    else:
-                        if st.button(f"Mark Complete", key=f"b_{row['id']}"):
-                            supabase.table("resolutions").update({"is_completed": True, "current_value": 1}).eq("id", row['id']).execute()
-                            confetti()
+                            if is_done: confetti(emojis=["✨"])
                             st.rerun()
                 with c2:
-                    # Delete with confirmation
-                    if st.button("🗑️", key=f"del_{row['id']}"):
+                    # Using '🗑️' as standard icon for delete
+                    if st.button("Delete", key=f"del_{row['id']}"):
                         supabase.table("resolutions").delete().eq("id", row['id']).execute()
                         st.rerun()
     else:
-        st.info("You have no active goals.")
+        st.info("No active records.")
 
-# --- COMPLETED TAB ---
 with tab_done:
     if not df.empty:
         done_df = df[df['is_completed'] == True]
         for _, row in done_df.iterrows():
-            st.success(f"✅ **{row['title']}** - {row['category']}")
-            if st.button("Delete History", key=f"dc_{row['id']}"):
+            st.info(f"Done: {row['title']}")
+            if st.button("Remove History", key=f"d_done_{row['id']}"):
                 supabase.table("resolutions").delete().eq("id", row['id']).execute()
                 st.rerun()
